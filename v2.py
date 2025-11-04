@@ -31,7 +31,7 @@ intents.members = True
 
 bot = commands.Bot(command_prefix='.', intents=intents, help_command=None)  # Prefix kept for legacy, but slash primary
 
-to = ""  # Replace with your token
+to = "" # Use environment variable for token security
 
 # Main admin ID
 MAIN_ADMIN_ID = 1405866008127864852
@@ -134,16 +134,20 @@ def create_error_embed(title, description=""): return create_embed(title, descri
 def create_info_embed(title, description=""): return create_embed(title, description, color=0x00ccff)
 def create_warning_embed(title, description=""): return create_embed(title, description, color=0xffaa00)
 
-# Incus execution (updated for v6.18+ with systemd creds support)
+# Incus execution (fixed error handling: always include command in error, log stdout/stderr, handle empty stderr better)
 async def execute_incus(command, timeout=300):  # Increased default timeout to 300s to fix 120s errors
     try:
         cmd = shlex.split(command)
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        stdout_str = stdout.decode().strip() if stdout else ""
+        stderr_str = stderr.decode().strip() if stderr else ""
         if proc.returncode != 0:
-            error = stderr.decode().strip() if stderr else "Command failed with no error output"
-            raise Exception(error)
-        return stdout.decode().strip() if stdout else True
+            error_msg = f"{stderr_str or 'Unknown error (empty stderr)'}. Command: {command}. STDOUT: {stdout_str}"
+            logger.error(f"Incus command failed: {command} - Return code: {proc.returncode} - STDERR: {stderr_str} - STDOUT: {stdout_str}")
+            raise Exception(error_msg)
+        logger.info(f"Incus command succeeded: {command} - STDOUT: {stdout_str}")
+        return stdout_str if stdout_str else True
     except asyncio.TimeoutError:
         logger.error(f"Incus command timed out after {timeout}s: {command}")
         raise Exception(f"Command timed out after {timeout} seconds - container may be unresponsive. Try manual stop or increase timeout.")
@@ -263,11 +267,11 @@ async def on_ready():
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.CheckFailure):
-        await interaction.response.send_message(embed=create_error_embed("Access Denied", "You don't have permission to use this command."), ephemeral=True)
+        await interaction.response.send_message(embed=create_error_embed("Access Denied", "You don't have permission to use this command."))
     else:
         logger.error(f"App command error: {error}")
         if not interaction.response.is_done():
-            await interaction.response.send_message(embed=create_error_embed("System Error", "An error occurred. Please try again."), ephemeral=True)
+            await interaction.response.send_message(embed=create_error_embed("System Error", "An error occurred. Please try again."))
 
 @bot.event
 async def on_command_error(ctx, error):
@@ -287,14 +291,14 @@ async def on_command_error(ctx, error):
 @is_admin()
 async def slash_create(interaction: discord.Interaction, user: discord.Member, ram: int, cpu: int, ipv4: Optional[str] = None, ipv6: Optional[str] = None):
     if ram <= 0 or cpu <= 0:
-        await interaction.response.send_message(embed=create_error_embed("Invalid Specs", "RAM and CPU must be positive integers."), ephemeral=True)
+        await interaction.response.send_message(embed=create_error_embed("Invalid Specs", "RAM and CPU must be positive integers."))
         return
     user_id = str(user.id)
     if user_id not in vps_data: vps_data[user_id] = []
     vps_count = len(vps_data[user_id]) + 1
     container_name = f"vps-{user_id}-{vps_count}"
     ram_mb = ram * 1024
-    await interaction.response.send_message(embed=create_info_embed("Creating VPS", f"Deploying VPS for {user.mention}..."), ephemeral=True)
+    await interaction.response.send_message(embed=create_info_embed("Creating VPS", f"Deploying VPS for {user.mention}..."))
     try:
         await execute_incus(f"incus launch ubuntu:22.04 {container_name} --config limits.memory={ram_mb}MB --config limits.cpu={cpu} -s btrpool")
         await asyncio.sleep(10)
@@ -306,7 +310,7 @@ async def slash_create(interaction: discord.Interaction, user: discord.Member, r
                 ipv4, ipv6 = await get_container_ips(container_name)
             else:
                 ipv4, ipv6 = dynamic_ipv4, dynamic_ipv6
-                await interaction.followup.send(embed=create_warning_embed("Static IP Failed", "Using dynamic IPs instead."), ephemeral=True)
+                await interaction.followup.send(embed=create_warning_embed("Static IP Failed", "Using dynamic IPs instead."))
         else:
             ipv4, ipv6 = dynamic_ipv4, dynamic_ipv6
         vps_info = {
@@ -333,11 +337,11 @@ async def slash_create(interaction: discord.Interaction, user: discord.Member, r
             dm_embed.add_field(name="Next Steps", value="Use `/manage` to control your VPS\nUse `/manage` → SSH to get access credentials", inline=False)
             await user.send(embed=dm_embed)
         except discord.Forbidden:
-            await interaction.followup.send(embed=create_info_embed("Notification Failed", f"Couldn't send DM to {user.mention}."), ephemeral=True)
+            await interaction.followup.send(embed=create_info_embed("Notification Failed", f"Couldn't send DM to {user.mention}."))
     except Exception as e:
         await interaction.edit_original_response(embed=create_error_embed("Creation Failed", f"Error: {str(e)}"))
 
-# ManageView class (same as before)
+# ManageView class (changed ephemeral to public responses)
 class ManageView(discord.ui.View):
     def __init__(self, user_id, vps_list, is_shared=False, owner_id=None, is_admin=False):
         super().__init__(timeout=300)
@@ -392,7 +396,7 @@ class ManageView(discord.ui.View):
 
     async def select_vps(self, interaction: discord.Interaction):
         if str(interaction.user.id) != self.user_id and not self.is_admin:
-            await interaction.response.send_message(embed=create_error_embed("Access Denied", "This is not your VPS!"), ephemeral=True)
+            await interaction.response.send_message(embed=create_error_embed("Access Denied", "This is not your VPS!"))
             return
         self.selected_index = int(self.select.values[0])
         new_embed = self.create_vps_embed(self.selected_index)
@@ -402,14 +406,14 @@ class ManageView(discord.ui.View):
 
     async def action_callback(self, interaction: discord.Interaction, action: str):
         if str(interaction.user.id) != self.user_id and not self.is_admin:
-            await interaction.response.send_message(embed=create_error_embed("Access Denied", "This is not your VPS!"), ephemeral=True)
+            await interaction.response.send_message(embed=create_error_embed("Access Denied", "This is not your VPS!"))
             return
         if self.is_shared: vps = vps_data[self.owner_id][self.selected_index]
         else: vps = self.vps_list[self.selected_index]
         container_name = vps["container_name"]
         if action == 'reinstall':
             if self.is_shared or self.is_admin:
-                await interaction.response.send_message(embed=create_error_embed("Access Denied", "Only the VPS owner can reinstall!"), ephemeral=True)
+                await interaction.response.send_message(embed=create_error_embed("Access Denied", "Only the VPS owner can reinstall!"))
                 return
             confirm_embed = create_warning_embed("Reinstall Warning", f"⚠️ **WARNING:** This will erase all data on VPS `{container_name}` and reinstall Ubuntu 22.04.\n\nThis action cannot be undone. Continue?")
             class ConfirmView(discord.ui.View):
@@ -422,11 +426,11 @@ class ManageView(discord.ui.View):
                     self.selected_index = selected_index
                 @discord.ui.button(label="Confirm", style=discord.ButtonStyle.danger)
                 async def confirm(self, interaction: discord.Interaction, item: discord.ui.Button):
-                    await interaction.response.defer(ephemeral=True)
+                    await interaction.response.defer()
                     try:
-                        await interaction.followup.send(embed=create_info_embed("Deleting Container", f"Forcefully removing container `{self.container_name}`..."), ephemeral=True)
+                        await interaction.followup.send(embed=create_info_embed("Deleting Container", f"Forcefully removing container `{self.container_name}`..."))
                         await execute_incus(f"incus delete {self.container_name} --force")
-                        await interaction.followup.send(embed=create_info_embed("Recreating Container", f"Creating new container `{self.container_name}`..."), ephemeral=True)
+                        await interaction.followup.send(embed=create_info_embed("Recreating Container", f"Creating new container `{self.container_name}`..."))
                         original_ram = self.vps["ram"]
                         original_cpu = self.vps["cpu"]
                         ram_gb = int(original_ram.replace("GB", ""))
@@ -439,51 +443,51 @@ class ManageView(discord.ui.View):
                         self.vps["status"] = "running"
                         self.vps["created_at"] = datetime.now().isoformat()
                         save_data()
-                        await interaction.followup.send(embed=create_success_embed("Reinstall Complete", f"VPS `{self.container_name}` has been successfully reinstalled!"), ephemeral=True)
+                        await interaction.followup.send(embed=create_success_embed("Reinstall Complete", f"VPS `{self.container_name}` has been successfully reinstalled!"))
                         if not self.parent_view.is_shared:
                             await interaction.message.edit(embed=self.parent_view.create_vps_embed(self.parent_view.selected_index), view=self.parent_view)
                     except Exception as e:
-                        await interaction.followup.send(embed=create_error_embed("Reinstall Failed", f"Error: {str(e)}"), ephemeral=True)
+                        await interaction.followup.send(embed=create_error_embed("Reinstall Failed", f"Error: {str(e)}"))
                 @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
                 async def cancel(self, interaction: discord.Interaction, item: discord.ui.Button):
                     await interaction.response.edit_message(embed=self.parent_view.create_vps_embed(self.parent_view.selected_index), view=self.parent_view)
-            await interaction.response.send_message(embed=confirm_embed, view=ConfirmView(self, container_name, vps, self.owner_id, self.selected_index), ephemeral=True)
+            await interaction.response.send_message(embed=confirm_embed, view=ConfirmView(self, container_name, vps, self.owner_id, self.selected_index))
         elif action == 'start':
-            await interaction.response.defer(ephemeral=True)
+            await interaction.response.defer()
             try:
                 await execute_incus(f"incus start {container_name}")
                 vps["status"] = "running"
                 save_data()
-                await interaction.followup.send(embed=create_success_embed("VPS Started", f"VPS `{container_name}` is now running!"), ephemeral=True)
+                await interaction.followup.send(embed=create_success_embed("VPS Started", f"VPS `{container_name}` is now running!"))
                 await interaction.message.edit(embed=self.create_vps_embed(self.selected_index), view=self)
             except Exception as e:
-                await interaction.followup.send(embed=create_error_embed("Start Failed", str(e)), ephemeral=True)
+                await interaction.followup.send(embed=create_error_embed("Start Failed", str(e)))
         elif action == 'stop':
-            await interaction.response.defer(ephemeral=True)
+            await interaction.response.defer()
             try:
                 await execute_incus(f"incus stop {container_name} --force", timeout=300)
                 vps["status"] = "stopped"
                 save_data()
-                await interaction.followup.send(embed=create_success_embed("VPS Stopped", f"VPS `{container_name}` has been stopped!"), ephemeral=True)
+                await interaction.followup.send(embed=create_success_embed("VPS Stopped", f"VPS `{container_name}` has been stopped!"))
                 await interaction.message.edit(embed=self.create_vps_embed(self.selected_index), view=self)
             except asyncio.TimeoutError:
-                await interaction.followup.send(embed=create_warning_embed("Stop Timeout", f"Stop command timed out for `{container_name}`. Container may still be stopping. Check manually with `incus list`."), ephemeral=True)
+                await interaction.followup.send(embed=create_warning_embed("Stop Timeout", f"Stop command timed out for `{container_name}`. Container may still be stopping. Check manually with `incus list`."))
             except Exception as e:
-                await interaction.followup.send(embed=create_error_embed("Stop Failed", str(e)), ephemeral=True)
+                await interaction.followup.send(embed=create_error_embed("Stop Failed", str(e)))
         elif action == 'sshx':
-            await interaction.response.defer(ephemeral=True)
+            await interaction.response.defer()
             try:
                 # Check if sshx is installed
                 check_cmd = f"incus exec {container_name} -- which sshx"
                 check_output = await execute_incus(check_cmd, timeout=60)
                 if not check_output.strip():
-                    await interaction.followup.send(embed=create_info_embed("Installing SSHX", "Installing sshx..."), ephemeral=True)
+                    await interaction.followup.send(embed=create_info_embed("Installing SSHX", "Installing sshx..."))
                     await execute_incus(f"incus exec {container_name} -- bash -c 'apt update'", timeout=180)
                     await execute_incus(f"incus exec {container_name} -- bash -c 'apt install -y wget curl'", timeout=180)
                     install_output = await execute_incus(f"incus exec {container_name} -- bash -c 'curl -sSf https://sshx.io/get | sh'", timeout=180)
                     if "error" in install_output.lower():
                         raise Exception("Install failed: " + install_output)
-                    await interaction.followup.send(embed=create_success_embed("SSHX Installed", "SSHX installed successfully!"), ephemeral=True)
+                    await interaction.followup.send(embed=create_success_embed("SSHX Installed", "SSHX installed successfully!"))
                 
                 # Create sshx session
                 cmd = ["incus", "exec", container_name, "--", "sshx", "-R", "0:localhost:22"]
@@ -509,17 +513,17 @@ class ManageView(discord.ui.View):
                 ssh_embed.add_field(name="⚠️ Security", value="This link is temporary (24h). Do not share it.", inline=False)
                 try:
                     await interaction.user.send(embed=ssh_embed)
-                    await interaction.followup.send(embed=create_success_embed("SSHX Sent", f"Check your DMs for SSHX link!"), ephemeral=True)
+                    await interaction.followup.send(embed=create_success_embed("SSHX Sent", f"Check your DMs for SSHX link!"))
                 except discord.Forbidden:
                     await interaction.followup.send(embed=ssh_embed)
-                    await interaction.followup.send(embed=create_error_embed("DM Failed", "Enable DMs to receive SSHX link!"), ephemeral=True)
+                    await interaction.followup.send(embed=create_error_embed("DM Failed", "Enable DMs to receive SSHX link!"))
             except Exception as e:
-                await interaction.followup.send(embed=create_error_embed("SSHX Error", f"Error: {str(e)}"), ephemeral=True)
+                await interaction.followup.send(embed=create_error_embed("SSHX Error", f"Error: {str(e)}"))
 
 @bot.tree.command(name="manage", description="Manage your VPS or another user's (Admin only)")
 @app_commands.describe(user="Optional: Manage another user's VPS (Admin only)")
 async def slash_manage(interaction: discord.Interaction, user: Optional[discord.Member] = None):
-    await interaction.response.defer(ephemeral=True)
+    await interaction.response.defer()
     if user:
         if not (str(interaction.user.id) == str(MAIN_ADMIN_ID) or str(interaction.user.id) in admin_data.get("admins", [])):
             await interaction.followup.send(embed=create_error_embed("Access Denied", "Only admins can manage other users' VPS."))
@@ -579,7 +583,7 @@ async def slash_list_all(interaction: discord.Interaction):
             embed.add_field(name=f"VPS Deployments ({i+1}-{min(i+chunk_size, len(vps_info))})", value="\n".join(chunk), inline=False)
     if len(vps_info) > 30:
         embed.add_field(name="Additional VPS", value=f"... and {len(vps_info) - 30} more VPS deployments", inline=False)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="manage_shared", description="Manage a shared VPS")
 @app_commands.describe(owner="The owner of the VPS", vps_number="VPS number (1-based)")
@@ -587,14 +591,14 @@ async def slash_manage_shared(interaction: discord.Interaction, owner: discord.M
     owner_id = str(owner.id)
     user_id = str(interaction.user.id)
     if owner_id not in vps_data or vps_number < 1 or vps_number > len(vps_data[owner_id]):
-        await interaction.response.send_message(embed=create_error_embed("Invalid VPS", "Invalid VPS number or owner doesn't have a VPS."), ephemeral=True)
+        await interaction.response.send_message(embed=create_error_embed("Invalid VPS", "Invalid VPS number or owner doesn't have a VPS."))
         return
     vps = vps_data[owner_id][vps_number - 1]
     if user_id not in vps.get("shared_with", []):
-        await interaction.response.send_message(embed=create_error_embed("Access Denied", "You do not have access to this VPS."), ephemeral=True)
+        await interaction.response.send_message(embed=create_error_embed("Access Denied", "You do not have access to this VPS."))
         return
     view = ManageView(user_id, [vps], is_shared=True, owner_id=owner_id)
-    await interaction.response.send_message(embed=view.initial_embed, view=view, ephemeral=True)
+    await interaction.response.send_message(embed=view.initial_embed, view=view)
 
 @bot.tree.command(name="share_user", description="Share VPS access with a user")
 @app_commands.describe(shared_user="User to share with", vps_number="VPS number (1-based)")
@@ -602,20 +606,20 @@ async def slash_share_user(interaction: discord.Interaction, shared_user: discor
     user_id = str(interaction.user.id)
     shared_user_id = str(shared_user.id)
     if user_id not in vps_data or vps_number < 1 or vps_number > len(vps_data[user_id]):
-        await interaction.response.send_message(embed=create_error_embed("Invalid VPS", "Invalid VPS number or you don't have a VPS."), ephemeral=True)
+        await interaction.response.send_message(embed=create_error_embed("Invalid VPS", "Invalid VPS number or you don't have a VPS."))
         return
     vps = vps_data[user_id][vps_number - 1]
     if "shared_with" not in vps: vps["shared_with"] = []
     if shared_user_id in vps["shared_with"]:
-        await interaction.response.send_message(embed=create_error_embed("Already Shared", f"{shared_user.mention} already has access!"), ephemeral=True)
+        await interaction.response.send_message(embed=create_error_embed("Already Shared", f"{shared_user.mention} already has access!"))
         return
     vps["shared_with"].append(shared_user_id)
     save_data()
-    await interaction.response.send_message(embed=create_success_embed("VPS Shared", f"VPS #{vps_number} shared with {shared_user.mention}!"), ephemeral=True)
+    await interaction.response.send_message(embed=create_success_embed("VPS Shared", f"VPS #{vps_number} shared with {shared_user.mention}!"))
     try:
         await shared_user.send(embed=create_embed("VPS Access Granted", f"You have access to VPS #{vps_number} from {interaction.user.mention}. Use `/manage-shared {interaction.user.mention} {vps_number}`", 0x00ff88))
     except discord.Forbidden:
-        await interaction.followup.send(embed=create_info_embed("Notification Failed", f"Could not DM {shared_user.mention}"), ephemeral=True)
+        await interaction.followup.send(embed=create_info_embed("Notification Failed", f"Could not DM {shared_user.mention}"))
 
 @bot.tree.command(name="share_ruser", description="Revoke VPS access from a user")
 @app_commands.describe(shared_user="User to revoke from", vps_number="VPS number (1-based)")
@@ -623,20 +627,20 @@ async def slash_revoke_share(interaction: discord.Interaction, shared_user: disc
     user_id = str(interaction.user.id)
     shared_user_id = str(shared_user.id)
     if user_id not in vps_data or vps_number < 1 or vps_number > len(vps_data[user_id]):
-        await interaction.response.send_message(embed=create_error_embed("Invalid VPS", "Invalid VPS number or you don't have a VPS."), ephemeral=True)
+        await interaction.response.send_message(embed=create_error_embed("Invalid VPS", "Invalid VPS number or you don't have a VPS."))
         return
     vps = vps_data[user_id][vps_number - 1]
     if "shared_with" not in vps: vps["shared_with"] = []
     if shared_user_id not in vps["shared_with"]:
-        await interaction.response.send_message(embed=create_error_embed("Not Shared", f"{shared_user.mention} doesn't have access!"), ephemeral=True)
+        await interaction.response.send_message(embed=create_error_embed("Not Shared", f"{shared_user.mention} doesn't have access!"))
         return
     vps["shared_with"].remove(shared_user_id)
     save_data()
-    await interaction.response.send_message(embed=create_success_embed("Access Revoked", f"Access to VPS #{vps_number} revoked from {shared_user.mention}!"), ephemeral=True)
+    await interaction.response.send_message(embed=create_success_embed("Access Revoked", f"Access to VPS #{vps_number} revoked from {shared_user.mention}!"))
     try:
         await shared_user.send(embed=create_embed("VPS Access Revoked", f"Your access to VPS #{vps_number} by {interaction.user.mention} has been revoked.", 0xff3366))
     except discord.Forbidden:
-        await interaction.followup.send(embed=create_info_embed("Notification Failed", f"Could not DM {shared_user.mention}"), ephemeral=True)
+        await interaction.followup.send(embed=create_info_embed("Notification Failed", f"Could not DM {shared_user.mention}"))
 
 @bot.tree.command(name="buywc", description="Buy VPS with credits")
 @app_commands.describe(plan="Plan: Starter, Basic, Standard, Pro", processor="Processor: Intel or AMD", ipv4="Optional static IPv4", ipv6="Optional static IPv6")
@@ -655,15 +659,15 @@ async def slash_buywc(interaction: discord.Interaction, plan: str, processor: st
         "Pro": {"ram": "16GB", "cpu": "2", "storage": "10GB"}
     }
     if plan not in prices:
-        await interaction.response.send_message(embed=create_error_embed("Invalid Plan", "Available: Starter, Basic, Standard, Pro"), ephemeral=True)
+        await interaction.response.send_message(embed=create_error_embed("Invalid Plan", "Available: Starter, Basic, Standard, Pro"))
         return
     if processor not in ["Intel", "AMD"]:
-        await interaction.response.send_message(embed=create_error_embed("Invalid Processor", "Choose: Intel or AMD"), ephemeral=True)
+        await interaction.response.send_message(embed=create_error_embed("Invalid Processor", "Choose: Intel or AMD"))
         return
     cost = prices[plan][processor]
     if user_id not in user_data: user_data[user_id] = {"credits": 0}
     if user_data[user_id]["credits"] < cost:
-        await interaction.response.send_message(embed=create_error_embed("Insufficient Credits", f"You need {cost} credits but have {user_data[user_id]['credits']}"), ephemeral=True)
+        await interaction.response.send_message(embed=create_error_embed("Insufficient Credits", f"You need {cost} credits but have {user_data[user_id]['credits']}"))
         return
     user_data[user_id]["credits"] -= cost
     if user_id not in vps_data: vps_data[user_id] = []
@@ -673,7 +677,7 @@ async def slash_buywc(interaction: discord.Interaction, plan: str, processor: st
     cpu_str = plans[plan]["cpu"]
     ram_gb = int(ram_str.replace("GB", ""))
     ram_mb = ram_gb * 1024
-    await interaction.response.send_message(embed=create_info_embed("Processing Purchase", f"Deploying {plan} VPS..."), ephemeral=True)
+    await interaction.response.send_message(embed=create_info_embed("Processing Purchase", f"Deploying {plan} VPS..."))
     try:
         await execute_incus(f"incus launch ubuntu:22.04 {container_name} --config limits.memory={ram_mb}MB --config limits.cpu={cpu_str} -s btrpool")
         await asyncio.sleep(10)
@@ -731,9 +735,9 @@ async def slash_buyc(interaction: discord.Interaction):
         embed.add_field(**field)
     try:
         await user.send(embed=embed)
-        await interaction.response.send_message(embed=create_success_embed("Information Sent", "Payment details sent to your DMs!"), ephemeral=True)
+        await interaction.response.send_message(embed=create_success_embed("Information Sent", "Payment details sent to your DMs!"))
     except discord.Forbidden:
-        await interaction.response.send_message(embed=create_error_embed("DM Failed", "Enable DMs to receive payment info!"), ephemeral=True)
+        await interaction.response.send_message(embed=create_error_embed("DM Failed", "Enable DMs to receive payment info!"))
 
 @bot.tree.command(name="delete_vps", description="Delete a user's VPS (Admin only)")
 @app_commands.describe(user="User to delete from", vps_number="VPS number (1-based)", reason="Optional reason")
@@ -741,11 +745,11 @@ async def slash_buyc(interaction: discord.Interaction):
 async def slash_delete_vps(interaction: discord.Interaction, user: discord.Member, vps_number: int, reason: Optional[str] = "No reason"):
     user_id = str(user.id)
     if user_id not in vps_data or vps_number < 1 or vps_number > len(vps_data[user_id]):
-        await interaction.response.send_message(embed=create_error_embed("Invalid VPS", "Invalid VPS number or user doesn't have a VPS."), ephemeral=True)
+        await interaction.response.send_message(embed=create_error_embed("Invalid VPS", "Invalid VPS number or user doesn't have a VPS."))
         return
     vps = vps_data[user_id][vps_number - 1]
     container_name = vps["container_name"]
-    await interaction.response.send_message(embed=create_info_embed("Deleting VPS", f"Removing VPS #{vps_number}..."), ephemeral=True)
+    await interaction.response.send_message(embed=create_info_embed("Deleting VPS", f"Removing VPS #{vps_number}..."))
     try:
         await execute_incus(f"incus delete {container_name} --force")
         del vps_data[user_id][vps_number - 1]
@@ -778,20 +782,20 @@ async def slash_plans(interaction: discord.Interaction):
         embed.add_field(**field)
     embed.add_field(name="🛒 Purchase", value="Use `/buywc <plan> <processor> [ipv4] [ipv6]`\nExample: `/buywc Starter Intel`", inline=False)
     embed.set_footer(text="All plans include Ubuntu 22.04 • Full root access • Optional static IPs")
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="adminc", description="Add credits to user (Admin only)")
 @app_commands.describe(user="User to add to", amount="Amount to add")
 @is_admin()
 async def slash_admin_credits(interaction: discord.Interaction, user: discord.Member, amount: int):
     if amount <= 0:
-        await interaction.response.send_message(embed=create_error_embed("Invalid Amount", "Amount must be a positive integer."), ephemeral=True)
+        await interaction.response.send_message(embed=create_error_embed("Invalid Amount", "Amount must be a positive integer."))
         return
     user_id = str(user.id)
     if user_id not in user_data: user_data[user_id] = {"credits": 0}
     user_data[user_id]["credits"] += amount
     save_data()
-    await interaction.response.send_message(embed=create_success_embed("Credits Added", f"Added {amount} credits to {user.mention}\nNew balance: {user_data[user_id]['credits']}"), ephemeral=True)
+    await interaction.response.send_message(embed=create_success_embed("Credits Added", f"Added {amount} credits to {user.mention}\nNew balance: {user_data[user_id]['credits']}"))
 
 @bot.tree.command(name="adminrc", description="Remove credits from user (Admin only)")
 @app_commands.describe(user="User to remove from", amount_or_all="Amount or 'all'")
@@ -808,17 +812,17 @@ async def slash_admin_remove_credits(interaction: discord.Interaction, user: dis
         try:
             amount = int(amount_or_all)
             if amount <= 0:
-                await interaction.response.send_message(embed=create_error_embed("Invalid Amount", "Use positive number or 'all'"), ephemeral=True)
+                await interaction.response.send_message(embed=create_error_embed("Invalid Amount", "Use positive number or 'all'"))
                 return
             if amount > current_credits: amount = current_credits
             user_data[user_id]["credits"] -= amount
             removed = amount
             action = f"{amount} credits removed"
         except ValueError:
-            await interaction.response.send_message(embed=create_error_embed("Invalid Amount", "Enter number or 'all'"), ephemeral=True)
+            await interaction.response.send_message(embed=create_error_embed("Invalid Amount", "Enter number or 'all'"))
             return
     save_data()
-    await interaction.response.send_message(embed=create_success_embed("Credits Removed", f"{action} from {user.mention}\nRemaining: {user_data[user_id]['credits']}"), ephemeral=True)
+    await interaction.response.send_message(embed=create_success_embed("Credits Removed", f"{action} from {user.mention}\nRemaining: {user_data[user_id]['credits']}"))
 
 @bot.tree.command(name="admin_add", description="Add admin (Main Admin only)")
 @app_commands.describe(user="User to promote")
@@ -826,19 +830,19 @@ async def slash_admin_remove_credits(interaction: discord.Interaction, user: dis
 async def slash_admin_add(interaction: discord.Interaction, user: discord.Member):
     user_id = str(user.id)
     if user_id == str(MAIN_ADMIN_ID):
-        await interaction.response.send_message(embed=create_error_embed("Already Admin", "This user is already the main admin!"), ephemeral=True)
+        await interaction.response.send_message(embed=create_error_embed("Already Admin", "This user is already the main admin!"))
         return
     if user_id in admin_data.get("admins", []):
-        await interaction.response.send_message(embed=create_error_embed("Already Admin", f"{user.mention} is already an admin!"), ephemeral=True)
+        await interaction.response.send_message(embed=create_error_embed("Already Admin", f"{user.mention} is already an admin!"))
         return
     if "admins" not in admin_data: admin_data["admins"] = []
     admin_data["admins"].append(user_id)
     save_data()
-    await interaction.response.send_message(embed=create_success_embed("Admin Added", f"{user.mention} is now an admin!"), ephemeral=True)
+    await interaction.response.send_message(embed=create_success_embed("Admin Added", f"{user.mention} is now an admin!"))
     try:
         await user.send(embed=create_embed("🎉 Admin Role Granted", f"You are now an admin by {interaction.user.mention}", 0x00ff88))
     except discord.Forbidden:
-        await interaction.followup.send(embed=create_info_embed("Notification Failed", f"Could not DM {user.mention}"), ephemeral=True)
+        await interaction.followup.send(embed=create_info_embed("Notification Failed", f"Could not DM {user.mention}"))
 
 @bot.tree.command(name="admin_remove", description="Remove admin (Main Admin only)")
 @app_commands.describe(user="User to demote")
@@ -846,18 +850,18 @@ async def slash_admin_add(interaction: discord.Interaction, user: discord.Member
 async def slash_admin_remove(interaction: discord.Interaction, user: discord.Member):
     user_id = str(user.id)
     if user_id == str(MAIN_ADMIN_ID):
-        await interaction.response.send_message(embed=create_error_embed("Cannot Remove", "You cannot remove the main admin!"), ephemeral=True)
+        await interaction.response.send_message(embed=create_error_embed("Cannot Remove", "You cannot remove the main admin!"))
         return
     if user_id not in admin_data.get("admins", []):
-        await interaction.response.send_message(embed=create_error_embed("Not Admin", f"{user.mention} is not an admin!"), ephemeral=True)
+        await interaction.response.send_message(embed=create_error_embed("Not Admin", f"{user.mention} is not an admin!"))
         return
     admin_data["admins"].remove(user_id)
     save_data()
-    await interaction.response.send_message(embed=create_success_embed("Admin Removed", f"{user.mention} is no longer an admin!"), ephemeral=True)
+    await interaction.response.send_message(embed=create_success_embed("Admin Removed", f"{user.mention} is no longer an admin!"))
     try:
         await user.send(embed=create_embed("⚠️ Admin Role Revoked", f"Your admin role was removed by {interaction.user.mention}", 0xff3366))
     except discord.Forbidden:
-        await interaction.followup.send(embed=create_info_embed("Notification Failed", f"Could not DM {user.mention}"), ephemeral=True)
+        await interaction.followup.send(embed=create_info_embed("Notification Failed", f"Could not DM {user.mention}"))
 
 @bot.tree.command(name="admin_list", description="List all admins (Main Admin only)")
 @is_main_admin()
@@ -877,7 +881,7 @@ async def slash_admin_list(interaction: discord.Interaction):
         embed.add_field(name="🛡️ Admins", value="\n".join(admin_list), inline=False)
     else:
         embed.add_field(name="🛡️ Admins", value="No additional admins", inline=False)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="credits", description="Check your credit balance")
 async def slash_credits(interaction: discord.Interaction):
@@ -888,7 +892,7 @@ async def slash_credits(interaction: discord.Interaction):
     embed = create_embed("💰 Credit Balance", f"Your account balance:", 0x1a1a1a)
     embed.add_field(name="Available Credits", value=f"**{user_data[user_id]['credits']}** credits", inline=False)
     embed.add_field(name="Need More?", value="Use `/buyc` to view payment methods", inline=False)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="userinfo", description="Get user info (Admin only)")
 @app_commands.describe(user="User to info")
@@ -918,7 +922,7 @@ async def slash_user_info(interaction: discord.Interaction, user: discord.Member
         embed.add_field(name="🖥️ VPS Information", value="**No VPS owned**", inline=False)
     is_admin_user = user_id == str(MAIN_ADMIN_ID) or user_id in admin_data.get("admins", [])
     embed.add_field(name="🛡️ Admin Status", value=f"**Admin:** {'Yes' if is_admin_user else 'No'}", inline=False)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="serverstats", description="Server statistics (Admin only)")
 @is_admin()
@@ -940,7 +944,7 @@ async def slash_server_stats(interaction: discord.Interaction):
     embed.add_field(name="🖥️ VPS", value=f"**Total VPS:** {total_vps}\n**Running:** {running_vps}\n**Stopped:** {total_vps - running_vps}", inline=False)
     embed.add_field(name="💰 Economy", value=f"**Total Credits:** {total_credits}", inline=False)
     embed.add_field(name="📈 Resources", value=f"**Total RAM:** {total_ram}GB\n**Total CPU:** {total_cpu} cores", inline=False)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="vpsinfo", description="VPS info (Admin only)")
 @app_commands.describe(container_name="Optional: Specific container, else all")
@@ -959,7 +963,7 @@ async def slash_vps_info(interaction: discord.Interaction, container_name: Optio
         for i in range(0, len(all_vps), chunk_size):
             chunk = all_vps[i:i+chunk_size]
             embed.add_field(name=f"VPS List ({i+1}-{i+chunk_size})", value="\n".join(chunk), inline=False)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(embed=embed)
     else:
         found_vps = None
         found_user = None
@@ -971,7 +975,7 @@ async def slash_vps_info(interaction: discord.Interaction, container_name: Optio
                     break
             if found_vps: break
         if not found_vps:
-            await interaction.response.send_message(embed=create_error_embed("VPS Not Found", f"No VPS found with container name: `{container_name}`"), ephemeral=True)
+            await interaction.response.send_message(embed=create_error_embed("VPS Not Found", f"No VPS found with container name: `{container_name}`"))
             return
         embed = create_embed(f"🖥️ VPS Information - {container_name}", f"Details for VPS owned by {found_user.mention}", 0x1a1a1a)
         embed.add_field(name="👤 Owner", value=f"**Name:** {found_user.name}\n**ID:** {found_user.id}", inline=False)
@@ -989,13 +993,13 @@ async def slash_vps_info(interaction: discord.Interaction, container_name: Optio
                 except:
                     shared_users.append(f"• Unknown User ({shared_id})")
             embed.add_field(name="🔗 Shared With", value="\n".join(shared_users), inline=False)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="restart_vps", description="Restart a VPS (Admin only)")
 @app_commands.describe(container_name="Container name")
 @is_admin()
 async def slash_restart_vps(interaction: discord.Interaction, container_name: str):
-    await interaction.response.send_message(embed=create_info_embed("Restarting VPS", f"Restarting VPS `{container_name}`..."), ephemeral=True)
+    await interaction.response.send_message(embed=create_info_embed("Restarting VPS", f"Restarting VPS `{container_name}`..."))
     try:
         await execute_incus(f"incus restart {container_name}")
         for user_id, vps_list in vps_data.items():
@@ -1013,7 +1017,7 @@ async def slash_restart_vps(interaction: discord.Interaction, container_name: st
 @is_admin()
 async def slash_backup_vps(interaction: discord.Interaction, container_name: str):
     snapshot_name = f"{container_name}-backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
-    await interaction.response.send_message(embed=create_info_embed("Creating Backup", f"Creating snapshot of `{container_name}`..."), ephemeral=True)
+    await interaction.response.send_message(embed=create_info_embed("Creating Backup", f"Creating snapshot of `{container_name}`..."))
     try:
         await execute_incus(f"incus snapshot {container_name} {snapshot_name}")
         await interaction.edit_original_response(embed=create_success_embed("Backup Created", f"Snapshot `{snapshot_name}` created successfully!"))
@@ -1024,7 +1028,7 @@ async def slash_backup_vps(interaction: discord.Interaction, container_name: str
 @app_commands.describe(container_name="Container name", snapshot_name="Snapshot name")
 @is_admin()
 async def slash_restore_vps(interaction: discord.Interaction, container_name: str, snapshot_name: str):
-    await interaction.response.send_message(embed=create_info_embed("Restoring VPS", f"Restoring `{container_name}` from snapshot `{snapshot_name}`..."), ephemeral=True)
+    await interaction.response.send_message(embed=create_info_embed("Restoring VPS", f"Restoring `{container_name}` from snapshot `{snapshot_name}`..."))
     try:
         await execute_incus(f"incus restore {container_name} {snapshot_name}")
         await interaction.edit_original_response(embed=create_success_embed("VPS Restored", f"VPS `{container_name}` has been restored from snapshot!"))
@@ -1039,7 +1043,7 @@ async def slash_list_snapshots(interaction: discord.Interaction, container_name:
         proc = await asyncio.create_subprocess_exec("incus", "info", container_name, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         stdout, stderr = await proc.communicate()
         if proc.returncode != 0:
-            await interaction.response.send_message(embed=create_error_embed("Error", f"Failed to get VPS info: {stderr.decode()}"), ephemeral=True)
+            await interaction.response.send_message(embed=create_error_embed("Error", f"Failed to get VPS info: {stderr.decode()}"))
             return
         info = stdout.decode()
         snapshots = []
@@ -1051,17 +1055,17 @@ async def slash_list_snapshots(interaction: discord.Interaction, container_name:
         if snapshots:
             embed = create_embed(f"📸 Snapshots for {container_name}", f"Found {len(snapshots)} snapshots", 0x1a1a1a)
             embed.add_field(name="Snapshots", value="\n".join([f"• {snap}" for snap in snapshots]), inline=False)
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.response.send_message(embed=embed)
         else:
-            await interaction.response.send_message(embed=create_info_embed("No Snapshots", f"No snapshots found for `{container_name}`"), ephemeral=True)
+            await interaction.response.send_message(embed=create_info_embed("No Snapshots", f"No snapshots found for `{container_name}`"))
     except Exception as e:
-        await interaction.response.send_message(embed=create_error_embed("Error", f"Error: {str(e)}"), ephemeral=True)
+        await interaction.response.send_message(embed=create_error_embed("Error", f"Error: {str(e)}"))
 
 @bot.tree.command(name="exec", description="Execute command in VPS (Admin only)")
 @app_commands.describe(container_name="Container name", command="Command to execute")
 @is_admin()
 async def slash_execute(interaction: discord.Interaction, container_name: str, command: str):
-    await interaction.response.send_message(embed=create_info_embed("Executing Command", f"Running command in `{container_name}`..."), ephemeral=True)
+    await interaction.response.send_message(embed=create_info_embed("Executing Command", f"Running command in `{container_name}`..."))
     try:
         proc = await asyncio.create_subprocess_exec("incus", "exec", container_name, "--", "bash", "-c", command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         stdout, stderr = await proc.communicate()
@@ -1088,7 +1092,7 @@ async def slash_stop_all_vps(interaction: discord.Interaction):
             super().__init__(timeout=60)
         @discord.ui.button(label="Stop All VPS", style=discord.ButtonStyle.danger)
         async def confirm(self, inter: discord.Interaction, item: discord.ui.Button):
-            await inter.response.defer(ephemeral=True)
+            await inter.response.defer()
             try:
                 proc = await asyncio.create_subprocess_exec("incus", "stop", "--all", "--force", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
                 stdout, stderr = await proc.communicate()
@@ -1102,18 +1106,18 @@ async def slash_stop_all_vps(interaction: discord.Interaction):
                     save_data()
                     resp_embed = create_success_embed("All VPS Stopped", f"Successfully stopped {stopped_count} VPS using `incus stop --all --force`")
                     resp_embed.add_field(name="Command Output", value=f"```\n{stdout.decode() if stdout else 'No output'}\n```", inline=False)
-                    await inter.followup.send(embed=resp_embed, ephemeral=True)
+                    await inter.followup.send(embed=resp_embed)
                 else:
                     error_msg = stderr.decode() if stderr else "Unknown error"
                     resp_embed = create_error_embed("Stop Failed", f"Failed to stop VPS: {error_msg}")
-                    await inter.followup.send(embed=resp_embed, ephemeral=True)
+                    await inter.followup.send(embed=resp_embed)
             except Exception as e:
                 resp_embed = create_error_embed("Error", f"Error stopping VPS: {str(e)}")
-                await inter.followup.send(embed=resp_embed, ephemeral=True)
+                await inter.followup.send(embed=resp_embed)
         @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
         async def cancel(self, inter: discord.Interaction, item: discord.ui.Button):
             await inter.response.edit_message(embed=create_info_embed("Operation Cancelled", "The stop all VPS operation has been cancelled."))
-    await interaction.response.send_message(embed=embed, view=ConfirmView(), ephemeral=True)
+    await interaction.response.send_message(embed=embed, view=ConfirmView())
 
 @bot.tree.command(name="cpu_monitor", description="Control CPU monitor (Admin only)")
 @app_commands.describe(action="Action: status, enable, disable")
@@ -1125,15 +1129,15 @@ async def slash_cpu_monitor(interaction: discord.Interaction, action: str):
         embed = create_embed("CPU Monitor Status", f"CPU monitoring is currently **{status}**", 0x00ccff if cpu_monitor_active else 0xffaa00)
         embed.add_field(name="Threshold", value=f"{CPU_THRESHOLD}% CPU usage", inline=True)
         embed.add_field(name="Check Interval", value=f"{CHECK_INTERVAL} seconds", inline=True)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(embed=embed)
     elif action.lower() == "enable":
         cpu_monitor_active = True
-        await interaction.response.send_message(embed=create_success_embed("CPU Monitor Enabled", "CPU monitoring has been enabled."), ephemeral=True)
+        await interaction.response.send_message(embed=create_success_embed("CPU Monitor Enabled", "CPU monitoring has been enabled."))
     elif action.lower() == "disable":
         cpu_monitor_active = False
-        await interaction.response.send_message(embed=create_warning_embed("CPU Monitor Disabled", "CPU monitoring has been disabled."), ephemeral=True)
+        await interaction.response.send_message(embed=create_warning_embed("CPU Monitor Disabled", "CPU monitoring has been disabled."))
     else:
-        await interaction.response.send_message(embed=create_error_embed("Invalid Action", "Use: `/cpu-monitor <status|enable|disable>`"), ephemeral=True)
+        await interaction.response.send_message(embed=create_error_embed("Invalid Action", "Use: `/cpu-monitor <status|enable|disable>`"))
 
 @bot.tree.command(name="set_ip", description="Set static IP for VPS (Admin only)")
 @app_commands.describe(container_name="Container name", ipv4="Optional IPv4", ipv6="Optional IPv6")
@@ -1151,13 +1155,13 @@ async def slash_set_ip(interaction: discord.Interaction, container_name: str, ip
                     save_data()
                     embed = create_success_embed("Static IP Set", f"Updated IPs for `{container_name}`: IPv4={vps['ipv4']}, IPv6={vps['ipv6']}")
                     embed.add_field(name="Note", value=f"Host IPv4: {HOST_IPV4} | For subnet /29, use IPs like 137.175.89.56", inline=False)
-                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                    await interaction.response.send_message(embed=embed)
                 else:
-                    await interaction.response.send_message(embed=create_error_embed("IP Set Failed", f"Failed to set IPs for `{container_name}`. Check Incus config."), ephemeral=True)
+                    await interaction.response.send_message(embed=create_error_embed("IP Set Failed", f"Failed to set IPs for `{container_name}`. Check Incus config."))
                 break
         if found: break
     if not found:
-        await interaction.response.send_message(embed=create_error_embed("VPS Not Found", f"No VPS with container `{container_name}`."), ephemeral=True)
+        await interaction.response.send_message(embed=create_error_embed("VPS Not Found", f"No VPS with container `{container_name}`."))
 
 @bot.tree.command(name="help", description="Show command help")
 async def slash_help(interaction: discord.Interaction):
@@ -1176,7 +1180,7 @@ async def slash_help(interaction: discord.Interaction):
         ("/manage-shared @owner <vps_number>", "Manage shared VPS")
     ]
     user_commands_text = "\n".join([f"**{cmd}** - {desc}" for cmd, desc in user_commands])
-    embed.add_field(name=""🛡️ Admin Commands", value=user_commands_text, inline=False)
+    embed.add_field(name="⚙️ Admins Commands", value=user_commands_text, inline=False)
     if is_user_admin:
         admin_commands = [
             ("/create @user <ram> <cpu> [ipv4] [ipv6]", "Create custom VPS (optional static IPs)"),
@@ -1207,7 +1211,7 @@ async def slash_help(interaction: discord.Interaction):
         main_admin_commands_text = "\n".join([f"**{cmd}** - {desc}" for cmd, desc in main_admin_commands])
         embed.add_field(name="👑 Main Admin Commands", value=main_admin_commands_text, inline=False)
     embed.set_footer(text="Upgraded for Incus 6.18 (systemd creds, VirtIO) • discord.py 2.6.4 • No auto-shutdown")
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.response.send_message(embed=embed)
 
 # Legacy prefix commands (deprecated)
 @bot.command(name='create')
@@ -1218,5 +1222,7 @@ async def legacy_create(ctx, *args):
 
 # Run bot
 if __name__ == "__main__":
-    token = "duscord-bit-tien"  # Replace with actual token
+    if not to:
+        logger.error("DISCORD_TOKEN environment variable not set. Please set it and run again.")
+        raise SystemExit("Token not set.")
     bot.run(to)
