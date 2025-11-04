@@ -1150,7 +1150,7 @@ async def slash_help(interaction: discord.Interaction):
     user_id = str(interaction.user.id)
     is_user_admin = user_id == str(MAIN_ADMIN_ID) or user_id in admin_data.get("admins", [])
     is_user_main_admin = user_id == str(MAIN_ADMIN_ID)
-    embed = create_embed("📚 Command Help", "CurlNode VPS Manager 2025 Commands (Incus 6.18+):", 0x1a1a1a)
+    embed = create_embed("📚 Command Help", "Gvm Panel VPS Manager 2025 Commands (Incus 6.18+):", 0x1a1a1a)
     user_commands = [
         ("/plans", "View available VPS plans"),
         ("/buyc", "Get payment information"),
@@ -1162,7 +1162,7 @@ async def slash_help(interaction: discord.Interaction):
         ("/manage-shared @owner <vps_number>", "Manage shared VPS")
     ]
     user_commands_text = "\n".join([f"**{cmd}** - {desc}" for cmd, desc in user_commands])
-    embed.add_field(name="👤 User Commands", value=user_commands_text, inline=False)
+    embed.add_field(name="🛡️ Admin Commands", value=user_commands_text, inline=False)
     if is_user_admin:
         admin_commands = [
             ("/create @user <ram> <cpu> [ipv4] [ipv6]", "Create custom VPS (optional static IPs)"),
