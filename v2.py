@@ -351,8 +351,15 @@ class ManageView(discord.ui.View):
         self.is_shared = is_shared
         self.owner_id = owner_id or user_id
         self.is_admin = is_admin
+
         if len(vps_list) > 1:
-            options = [discord.SelectOption(label=f"VPS {i+1} ({v.get('plan', 'Custom')})", description=f"Status: {v.get('status', 'unknown')}", value=str(i)) for i, v in enumerate(vps_list)]
+            options = [
+                discord.SelectOption(
+                    label=f"VPS {i+1} ({v.get('plan', 'Custom')})",
+                    description=f"Status: {v.get('status', 'unknown')}",
+                    value=str(i)
+                ) for i, v in enumerate(vps_list)
+            ]
             self.select = discord.ui.Select(placeholder="Select a VPS to manage", options=options)
             self.select.callback = self.select_vps
             self.add_item(self.select)
@@ -366,17 +373,33 @@ class ManageView(discord.ui.View):
     def create_vps_embed(self, index):
         vps = self.vps_list[index]
         status_color = 0x00ff88 if vps.get('status') == 'running' else 0xff3366
+
         owner_text = ""
         if self.is_admin and self.owner_id != self.user_id:
             try:
                 owner_user = bot.get_user(int(self.owner_id))
                 owner_text = f"\n**Owner:** {owner_user.mention}"
-            except: owner_text = f"\n**Owner ID:** {self.owner_id}"
-        embed = create_embed(f"VPS Management - VPS {index + 1}", f"Managing container: `{vps['container_name']}`{owner_text}", status_color)
-        resource_info = f"**Plan:** {vps.get('plan', 'Custom')}\n**Status:** `{vps.get('status', 'unknown').upper()}`\n**RAM:** {vps['ram']}\n**CPU:** {vps['cpu']} Cores\n**Storage:** {vps['storage']}\n**IPv4:** {vps.get('ipv4', 'Not assigned')}\n**IPv6:** {vps.get('ipv6', 'Not assigned')}"
-        if "processor" in vps: resource_info += f"\n**Processor:** {vps['processor']}"
+            except:
+                owner_text = f"\n**Owner ID:** {self.owner_id}"
+
+        embed = create_embed(
+            f"VPS Management - VPS {index + 1}",
+            f"Managing container: `{vps['container_name']}`{owner_text}",
+            status_color
+        )
+
+        resource_info = f"**Plan:** {vps.get('plan', 'Custom')}\n"
+        resource_info += f"**Status:** `{vps.get('status', 'unknown').upper()}`\n"
+        resource_info += f"**RAM:** {vps['ram']}\n"
+        resource_info += f"**CPU:** {vps['cpu']} Cores\n"
+        resource_info += f"**Storage:** {vps['storage']}"
+
+        if "processor" in vps:
+            resource_info += f"\n**Processor:** {vps['processor']}"
+
         embed.add_field(name="📊 Resources", value=resource_info, inline=False)
         embed.add_field(name="🎮 Controls", value="Use the buttons below to manage your VPS", inline=False)
+
         return embed
 
     def add_action_buttons(self):
@@ -384,19 +407,21 @@ class ManageView(discord.ui.View):
             reinstall_button = discord.ui.Button(label="🔄 Reinstall", style=discord.ButtonStyle.danger)
             reinstall_button.callback = lambda inter: self.action_callback(inter, 'reinstall')
             self.add_item(reinstall_button)
+
         start_button = discord.ui.Button(label="▶ Start", style=discord.ButtonStyle.success)
         start_button.callback = lambda inter: self.action_callback(inter, 'start')
         stop_button = discord.ui.Button(label="⏸ Stop", style=discord.ButtonStyle.secondary)
         stop_button.callback = lambda inter: self.action_callback(inter, 'stop')
         ssh_button = discord.ui.Button(label="🔑 SSH", style=discord.ButtonStyle.primary)
-        ssh_button.callback = lambda inter: self.action_callback(inter, 'sshx')
+        ssh_button.callback = lambda inter: self.action_callback(inter, 'tmate')
+
         self.add_item(start_button)
         self.add_item(stop_button)
         self.add_item(ssh_button)
 
     async def select_vps(self, interaction: discord.Interaction):
         if str(interaction.user.id) != self.user_id and not self.is_admin:
-            await interaction.response.send_message(embed=create_error_embed("Access Denied", "This is not your VPS!"))
+            await interaction.response.send_message(embed=create_error_embed("Access Denied", "This is not your VPS!"), ephemeral=True)
             return
         self.selected_index = int(self.select.values[0])
         new_embed = self.create_vps_embed(self.selected_index)
@@ -406,16 +431,25 @@ class ManageView(discord.ui.View):
 
     async def action_callback(self, interaction: discord.Interaction, action: str):
         if str(interaction.user.id) != self.user_id and not self.is_admin:
-            await interaction.response.send_message(embed=create_error_embed("Access Denied", "This is not your VPS!"))
+            await interaction.response.send_message(embed=create_error_embed("Access Denied", "This is not your VPS!"), ephemeral=True)
             return
-        if self.is_shared: vps = vps_data[self.owner_id][self.selected_index]
-        else: vps = self.vps_list[self.selected_index]
+
+        if self.is_shared:
+            vps = vps_data[self.owner_id][self.selected_index]
+        else:
+            vps = self.vps_list[self.selected_index]
+
         container_name = vps["container_name"]
+
         if action == 'reinstall':
             if self.is_shared or self.is_admin:
-                await interaction.response.send_message(embed=create_error_embed("Access Denied", "Only the VPS owner can reinstall!"))
+                await interaction.response.send_message(embed=create_error_embed("Access Denied", "Only the VPS owner can reinstall!"), ephemeral=True)
                 return
-            confirm_embed = create_warning_embed("Reinstall Warning", f"⚠️ **WARNING:** This will erase all data on VPS `{container_name}` and reinstall Ubuntu 22.04.\n\nThis action cannot be undone. Continue?")
+
+            confirm_embed = create_warning_embed("Reinstall Warning",
+                f"⚠️ **WARNING:** This will erase all data on VPS `{container_name}` and reinstall Ubuntu 22.04.\n\n"
+                f"This action cannot be undone. Continue?")
+
             class ConfirmView(discord.ui.View):
                 def __init__(self, parent_view, container_name, vps, owner_id, selected_index):
                     super().__init__(timeout=60)
@@ -424,128 +458,147 @@ class ManageView(discord.ui.View):
                     self.vps = vps
                     self.owner_id = owner_id
                     self.selected_index = selected_index
+
                 @discord.ui.button(label="Confirm", style=discord.ButtonStyle.danger)
                 async def confirm(self, interaction: discord.Interaction, item: discord.ui.Button):
-                    await interaction.response.defer()
+                    await interaction.response.defer(ephemeral=True)
                     try:
-                        await interaction.followup.send(embed=create_info_embed("Deleting Container", f"Forcefully removing container `{self.container_name}`..."))
-                        await execute_incus(f"incus delete {self.container_name} --force")
-                        await interaction.followup.send(embed=create_info_embed("Recreating Container", f"Creating new container `{self.container_name}`..."))
+                        # Force delete the container first
+                        await interaction.followup.send(embed=create_info_embed("Deleting Container", f"Forcefully removing container `{self.container_name}`..."), ephemeral=True)
+                        await execute_lxc(f"incus delete {self.container_name} --force")
+
+                        # Recreate with original specifications
+                        await interaction.followup.send(embed=create_info_embed("Recreating Container", f"Creating new container `{self.container_name}`..."), ephemeral=True)
                         original_ram = self.vps["ram"]
                         original_cpu = self.vps["cpu"]
-                        ram_gb = int(original_ram.replace("GB", ""))
-                        ram_mb = ram_gb * 1024
-                        await execute_incus(f"incus launch ubuntu:22.04 {self.container_name} --config limits.memory={ram_mb}MB --config limits.cpu={original_cpu} -s btrpool")
-                        await asyncio.sleep(10)
-                        ipv4, ipv6 = await get_container_ips(self.container_name)
-                        self.vps["ipv4"] = ipv4
-                        self.vps["ipv6"] = ipv6
+                        ram_mb = int(original_ram.replace("GB", "")) * 1024
+
+                        await execute_lxc(f"incus launch images:ubuntu/22.04 {self.container_name} --config limits.memory={ram_mb}MB --config limits.cpu={original_cpu} -s btrpool")
+
                         self.vps["status"] = "running"
                         self.vps["created_at"] = datetime.now().isoformat()
                         save_data()
-                        await interaction.followup.send(embed=create_success_embed("Reinstall Complete", f"VPS `{self.container_name}` has been successfully reinstalled!"))
+                        await interaction.followup.send(embed=create_success_embed("Reinstall Complete", f"VPS `{self.container_name}` has been successfully reinstalled!"), ephemeral=True)
+
                         if not self.parent_view.is_shared:
                             await interaction.message.edit(embed=self.parent_view.create_vps_embed(self.parent_view.selected_index), view=self.parent_view)
+
                     except Exception as e:
-                        await interaction.followup.send(embed=create_error_embed("Reinstall Failed", f"Error: {str(e)}"))
+                        await interaction.followup.send(embed=create_error_embed("Reinstall Failed", f"Error: {str(e)}"), ephemeral=True)
+
                 @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
                 async def cancel(self, interaction: discord.Interaction, item: discord.ui.Button):
                     await interaction.response.edit_message(embed=self.parent_view.create_vps_embed(self.parent_view.selected_index), view=self.parent_view)
-            await interaction.response.send_message(embed=confirm_embed, view=ConfirmView(self, container_name, vps, self.owner_id, self.selected_index))
+
+            await interaction.response.send_message(embed=confirm_embed, view=ConfirmView(self, container_name, vps, self.owner_id, self.selected_index), ephemeral=True)
+
         elif action == 'start':
-            await interaction.response.defer()
+            await interaction.response.defer(ephemeral=True)
             try:
-                await execute_incus(f"incus start {container_name}")
+                await execute_lxc(f"incus start {container_name}")
                 vps["status"] = "running"
                 save_data()
-                await interaction.followup.send(embed=create_success_embed("VPS Started", f"VPS `{container_name}` is now running!"))
+                await interaction.followup.send(embed=create_success_embed("VPS Started", f"VPS `{container_name}` is now running!"), ephemeral=True)
                 await interaction.message.edit(embed=self.create_vps_embed(self.selected_index), view=self)
             except Exception as e:
-                await interaction.followup.send(embed=create_error_embed("Start Failed", str(e)))
+                await interaction.followup.send(embed=create_error_embed("Start Failed", str(e)), ephemeral=True)
+
         elif action == 'stop':
-            await interaction.response.defer()
+            await interaction.response.defer(ephemeral=True)
             try:
-                await execute_incus(f"incus stop {container_name} --force", timeout=300)
+                await execute_lxc(f"incus stop {container_name}", timeout=120)
                 vps["status"] = "stopped"
                 save_data()
-                await interaction.followup.send(embed=create_success_embed("VPS Stopped", f"VPS `{container_name}` has been stopped!"))
+                await interaction.followup.send(embed=create_success_embed("VPS Stopped", f"VPS `{container_name}` has been stopped!"), ephemeral=True)
                 await interaction.message.edit(embed=self.create_vps_embed(self.selected_index), view=self)
-            except asyncio.TimeoutError:
-                await interaction.followup.send(embed=create_warning_embed("Stop Timeout", f"Stop command timed out for `{container_name}`. Container may still be stopping. Check manually with `incus list`."))
             except Exception as e:
-                await interaction.followup.send(embed=create_error_embed("Stop Failed", str(e)))
-        elif action == 'sshx':
-            await interaction.response.defer()
-            try:
-                # Check if sshx is installed
-                check_cmd = f"incus exec {container_name} -- which sshx"
-                check_output = await execute_incus(check_cmd, timeout=60)
-                if not check_output.strip():
-                    await interaction.followup.send(embed=create_info_embed("Installing SSHX", "Installing sshx..."))
-                    await execute_incus(f"incus exec {container_name} -- bash -c 'apt update'", timeout=180)
-                    await execute_incus(f"incus exec {container_name} -- bash -c 'apt install -y wget curl'", timeout=180)
-                    install_output = await execute_incus(f"incus exec {container_name} -- bash -c 'curl -sSf https://sshx.io/get | sh'", timeout=180)
-                    if "error" in install_output.lower():
-                        raise Exception("Install failed: " + install_output)
-                    await interaction.followup.send(embed=create_success_embed("SSHX Installed", "SSHX installed successfully!"))
-                
-                # Create sshx session
-                cmd = ["incus", "exec", container_name, "--", "sshx", "-R", "0:localhost:22"]
-                proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-                try:
-                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-                except asyncio.TimeoutError:
-                    proc.terminate()
-                    stdout, stderr = await proc.communicate()
-                output = stdout.decode().strip()
-                error_output = stderr.decode().strip()
-                if not output or "sshx.io" not in output:
-                    raise Exception(error_output or "No SSHX URL generated")
-                # Extract URL from output
-                ssh_url = re.search(r'https?://sshx\.io/[a-zA-Z0-9]+', output)
-                if not ssh_url:
-                    raise Exception("Failed to extract SSHX URL")
-                ssh_url = ssh_url.group(0)
-                
-                ssh_embed = create_embed("🔑 SSH Access via SSHX", f"SSH connection for VPS `{container_name}`:", 0x00ff88)
-                ssh_embed.add_field(name="URL", value=f"```{ssh_url}```", inline=False)
-                ssh_embed.add_field(name="Command", value=f"ssh -R 0:localhost:22 {ssh_url.split('/')[-1]}", inline=False)
-                ssh_embed.add_field(name="⚠️ Security", value="This link is temporary (24h). Do not share it.", inline=False)
-                try:
-                    await interaction.user.send(embed=ssh_embed)
-                    await interaction.followup.send(embed=create_success_embed("SSHX Sent", f"Check your DMs for SSHX link!"))
-                except discord.Forbidden:
-                    await interaction.followup.send(embed=ssh_embed)
-                    await interaction.followup.send(embed=create_error_embed("DM Failed", "Enable DMs to receive SSHX link!"))
-            except Exception as e:
-                await interaction.followup.send(embed=create_error_embed("SSHX Error", f"Error: {str(e)}"))
+                await interaction.followup.send(embed=create_error_embed("Stop Failed", str(e)), ephemeral=True)
 
-@bot.tree.command(name="manage", description="Manage your VPS or another user's (Admin only)")
-@app_commands.describe(user="Optional: Manage another user's VPS (Admin only)")
-async def slash_manage(interaction: discord.Interaction, user: Optional[discord.Member] = None):
-    await interaction.response.defer()
+        elif action == 'tmate':
+            await interaction.response.send_message(embed=create_info_embed("SSH Access", "Generating SSH connection..."), ephemeral=True)
+
+            try:
+                # Check if tmate exists
+                check_proc = await asyncio.create_subprocess_exec(
+                    "incus", "exec", container_name, "--", "which", "tmate",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                stdout, stderr = await check_proc.communicate()
+
+                if check_proc.returncode != 0:
+                    await interaction.followup.send(embed=create_info_embed("Installing SSH", "Installing tmate..."), ephemeral=True)
+                    # Fix common apt issues: clean, update sources, then update
+                    await execute_lxc(f"incus exec {container_name} -- sudo apt-get clean")
+                    await execute_lxc(f"incus exec {container_name} -- sudo rm -f /var/lib/apt/lists/*")
+                    await execute_lxc(f"incus exec {container_name} -- sudo apt-get update --allow-releaseinfo-change -y || sudo apt-get update -y")
+                    await execute_lxc(f"incus exec {container_name} -- sudo apt-get install tmate -y --no-install-recommends")
+                    await interaction.followup.send(embed=create_success_embed("Installed", "SSH service installed!"), ephemeral=True)
+
+                # REMOVED: Kill existing tmate sessions - now allowing unlimited sessions
+                # Users can launch unlimited tmate sessions
+
+                # Start tmate with unique session name using timestamp
+                session_name = f"session-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+                await execute_lxc(f"incus exec {container_name} -- tmate -S /tmp/{session_name}.sock new-session -d")
+                await asyncio.sleep(3)
+
+                # Get SSH link
+                ssh_proc = await asyncio.create_subprocess_exec(
+                    "incus", "exec", container_name, "--", "tmate", "-S", f"/tmp/{session_name}.sock", "display", "-p", "#{tmate_ssh}",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                stdout, stderr = await ssh_proc.communicate()
+                ssh_url = stdout.decode().strip() if stdout else None
+
+                if ssh_url:
+                    try:
+                        ssh_embed = create_embed("🔑 SSH Access", f"SSH connection for VPS `{container_name}`:", 0x00ff88)
+                        ssh_embed.add_field(name="Command", value=f"```{ssh_url}```", inline=False)
+                        ssh_embed.add_field(name="⚠️ Security", value="This link is temporary. Do not share it.", inline=False)
+                        ssh_embed.add_field(name="📝 Session", value=f"Session ID: {session_name}", inline=False)
+                        await interaction.user.send(embed=ssh_embed)
+                        await interaction.followup.send(embed=create_success_embed("SSH Sent", f"Check your DMs for SSH link! Session: {session_name}"), ephemeral=True)
+                    except discord.Forbidden:
+                        await interaction.followup.send(embed=create_error_embed("DM Failed", "Enable DMs to receive SSH link!"), ephemeral=True)
+                else:
+                    error_msg = stderr.decode().strip() if stderr else "Unknown error"
+                    await interaction.followup.send(embed=create_error_embed("SSH Failed", error_msg), ephemeral=True)
+            except Exception as e:
+                await interaction.followup.send(embed=create_error_embed("SSH Error", str(e)), ephemeral=True)
+
+@bot.command(name='manage')
+async def manage_vps(ctx, user: discord.Member = None):
+    """Manage your VPS or another user's VPS (Admin only)"""
+    # Check if user is trying to manage someone else's VPS
     if user:
-        if not (str(interaction.user.id) == str(MAIN_ADMIN_ID) or str(interaction.user.id) in admin_data.get("admins", [])):
-            await interaction.followup.send(embed=create_error_embed("Access Denied", "Only admins can manage other users' VPS."))
+        # Only admins can manage other users' VPS
+        if not (str(ctx.author.id) == str(MAIN_ADMIN_ID) or str(ctx.author.id) in admin_data.get("admins", [])):
+            await ctx.send(embed=create_error_embed("Access Denied", "Only admins can manage other users' VPS."))
             return
+
         user_id = str(user.id)
         vps_list = vps_data.get(user_id, [])
         if not vps_list:
-            await interaction.followup.send(embed=create_error_embed("No VPS Found", f"{user.mention} doesn't have any VPS."))
+            await ctx.send(embed=create_error_embed("No VPS Found", f"{user.mention} doesn't have any VPS."))
             return
-        view = ManageView(str(interaction.user.id), vps_list, is_admin=True, owner_id=user_id)
-        await interaction.followup.send(embed=create_info_embed(f"Managing {user.name}'s VPS", f"Managing VPS for {user.mention}"), view=view)
+
+        # Create admin view for managing another user's VPS
+        view = ManageView(str(ctx.author.id), vps_list, is_admin=True, owner_id=user_id)
+        await ctx.send(embed=create_info_embed(f"Managing {user.name}'s VPS", f"Managing VPS for {user.mention}"), view=view)
     else:
-        user_id = str(interaction.user.id)
+        # User managing their own VPS
+        user_id = str(ctx.author.id)
         vps_list = vps_data.get(user_id, [])
         if not vps_list:
-            embed = create_embed("No VPS Found", "You don't have any VPS. Use `/buywc` to purchase one.", 0xff3366)
-            embed.add_field(name="Quick Actions", value="• `/plans` - View plans\n• `/buywc <plan> <processor>` - Purchase VPS", inline=False)
-            await interaction.followup.send(embed=embed)
+            embed = create_embed("No VPS Found", "You don't have any VPS. Use `.buywc` to purchase one.", 0xff3366)
+            embed.add_field(name="Quick Actions", value="• `.plans` - View plans\n• `.buywc <plan> <processor>` - Purchase VPS", inline=False)
+            await ctx.send(embed=embed)
             return
         view = ManageView(user_id, vps_list)
-        await interaction.followup.send(embed=view.initial_embed, view=view)
-
+        await ctx.send(embed=view.initial_embed, view=view)
+        
 @bot.tree.command(name="list_all", description="List all VPS (Admin only)")
 @is_admin()
 async def slash_list_all(interaction: discord.Interaction):
