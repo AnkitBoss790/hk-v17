@@ -300,7 +300,7 @@ async def slash_create(interaction: discord.Interaction, user: discord.Member, r
     ram_mb = ram * 1024
     await interaction.response.send_message(embed=create_info_embed("Creating VPS", f"Deploying VPS for {user.mention}..."))
     try:
-        await execute_incus(f"incus launch ubuntu:22.04 {container_name} --config limits.memory={ram_mb}MB --config limits.cpu={cpu} -s btrpool")
+        await execute_incus(f"incus launch images:ubuntu/22.04 {container_name} --config limits.memory={ram_mb}MB --config limits.cpu={cpu} -s btrpool")
         await asyncio.sleep(10)
         dynamic_ipv4, dynamic_ipv6 = await get_container_ips(container_name)
         if ipv4 or ipv6:
@@ -465,7 +465,7 @@ class ManageView(discord.ui.View):
                     try:
                         # Force delete the container first
                         await interaction.followup.send(embed=create_info_embed("Deleting Container", f"Forcefully removing container `{self.container_name}`..."), ephemeral=True)
-                        await execute_lxc(f"incus delete {self.container_name} --force")
+                        await execute_incus(f"incus delete {self.container_name} --force")
 
                         # Recreate with original specifications
                         await interaction.followup.send(embed=create_info_embed("Recreating Container", f"Creating new container `{self.container_name}`..."), ephemeral=True)
@@ -473,7 +473,7 @@ class ManageView(discord.ui.View):
                         original_cpu = self.vps["cpu"]
                         ram_mb = int(original_ram.replace("GB", "")) * 1024
 
-                        await execute_lxc(f"incus launch images:ubuntu/22.04 {self.container_name} --config limits.memory={ram_mb}MB --config limits.cpu={original_cpu} -s btrpool")
+                        await execute_incus(f"incus launch images:ubuntu/22.04 {self.container_name} --config limits.memory={ram_mb}MB --config limits.cpu={original_cpu} -s btrpool")
 
                         self.vps["status"] = "running"
                         self.vps["created_at"] = datetime.now().isoformat()
@@ -495,7 +495,7 @@ class ManageView(discord.ui.View):
         elif action == 'start':
             await interaction.response.defer(ephemeral=True)
             try:
-                await execute_lxc(f"incus start {container_name}")
+                await execute_incus(f"incus start {container_name}")
                 vps["status"] = "running"
                 save_data()
                 await interaction.followup.send(embed=create_success_embed("VPS Started", f"VPS `{container_name}` is now running!"), ephemeral=True)
@@ -506,7 +506,7 @@ class ManageView(discord.ui.View):
         elif action == 'stop':
             await interaction.response.defer(ephemeral=True)
             try:
-                await execute_lxc(f"incus stop {container_name}", timeout=120)
+                await execute_incus(f"incus stop {container_name}", timeout=120)
                 vps["status"] = "stopped"
                 save_data()
                 await interaction.followup.send(embed=create_success_embed("VPS Stopped", f"VPS `{container_name}` has been stopped!"), ephemeral=True)
@@ -529,10 +529,10 @@ class ManageView(discord.ui.View):
                 if check_proc.returncode != 0:
                     await interaction.followup.send(embed=create_info_embed("Installing SSH", "Installing tmate..."), ephemeral=True)
                     # Fix common apt issues: clean, update sources, then update
-                    await execute_lxc(f"incus exec {container_name} -- sudo apt-get clean")
-                    await execute_lxc(f"incus exec {container_name} -- sudo rm -f /var/lib/apt/lists/*")
-                    await execute_lxc(f"incus exec {container_name} -- sudo apt-get update --allow-releaseinfo-change -y || sudo apt-get update -y")
-                    await execute_lxc(f"incus exec {container_name} -- sudo apt-get install tmate -y --no-install-recommends")
+                    await execute_incus(f"incus exec {container_name} -- sudo apt-get clean")
+                    await execute_incus(f"incus exec {container_name} -- sudo rm -f /var/lib/apt/lists/*")
+                    await execute_incus(f"incus exec {container_name} -- sudo apt-get update --allow-releaseinfo-change -y || sudo apt-get update -y")
+                    await execute_incus(f"incus exec {container_name} -- sudo apt-get install tmate -y --no-install-recommends")
                     await interaction.followup.send(embed=create_success_embed("Installed", "SSH service installed!"), ephemeral=True)
 
                 # REMOVED: Kill existing tmate sessions - now allowing unlimited sessions
@@ -540,7 +540,7 @@ class ManageView(discord.ui.View):
 
                 # Start tmate with unique session name using timestamp
                 session_name = f"session-{datetime.now().strftime('%Y%m%d%H%M%S')}"
-                await execute_lxc(f"incus exec {container_name} -- tmate -S /tmp/{session_name}.sock new-session -d")
+                await execute_incus(f"incus exec {container_name} -- tmate -S /tmp/{session_name}.sock new-session -d")
                 await asyncio.sleep(3)
 
                 # Get SSH link
